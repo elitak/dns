@@ -14,14 +14,17 @@ import Data.Bits ((.&.), shiftR, testBit)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy as BL
-import Data.Conduit (($$), Source)
+import Data.Conduit (($$), ($=), Source, ConduitM, await, yield)
 import Data.Conduit.Network (sourceSocket)
 import Data.IP (toIPv4, toIPv6)
 import Data.Traversable (traverse)
 import Data.Typeable (Typeable)
 import Network (Socket)
+import Network.Socket (Socket(MkSocket), SocketType(..))
 import Network.DNS.Internal
 import Network.DNS.StateBinary
+import Data.Binary.Get
+import Debug.Trace
 
 ----------------------------------------------------------------
 
@@ -36,7 +39,7 @@ instance ControlException.Exception RDATAParseError
 
 receive :: Socket -> IO DNSFormat
 receive sock = do
-    dns <- receiveDNSFormat $ sourceSocket sock
+    dns <- receive' sock
     case traverse unpackBytes dns of
         Left e  -> ControlException.throwIO (RDATAParseError e)
         Right d -> return d
@@ -44,8 +47,34 @@ receive sock = do
 -- | Receiving DNS data from 'Socket' and partially parse it.
 --   Unknown RDATA sections will be left as 'ByteString'
 receive' :: Socket -> IO (DNSMessage (RD ByteString))
-receive' sock = receiveDNSFormat $ sourceSocket sock
+receive' sock@(MkSocket _ _ Datagram _ _) = receiveDNSFormat $ sourceSocket sock
+receive' sock@(MkSocket _ _ Stream   _ _) = receiveDNSFormat $ sourceSocket sock $= stripPrefix
 
+
+-- TODO: write tests that exercise the handling of truncated messages. and negative lengths (data longer than prefix says)
+-- XXX TODO rewrite this to use the State monad or something to avoid the -1 remaining sentinel value
+stripPrefix :: ConduitM ByteString ByteString (ResourceT IO) ()
+stripPrefix = go (-1) BS.empty
+    where go 0 buffer = do
+            --trace ("end") return ()
+            yield buffer
+            go (-1) BS.empty
+          go remaining buffer = do
+            mbBytes <- await
+            case mbBytes of
+                Nothing -> return ()
+                Just bytes -> do
+                    case remaining of
+                        (-1) -> do
+                            let len = fromIntegral $ runGet getWord16be $ BL.fromStrict bytes
+                            --trace (show len) return ()
+                            --trace (show (len+2 - BS.length bytes)) return ()
+                            go (len+2 - BS.length bytes) (BS.drop 2 bytes)
+                        _ -> do
+                            --trace (show remaining) return ()
+                            --trace ("cont") return ()
+                            --trace (show $ remaining - BS.length bytes) return ()
+                            go (remaining - BS.length bytes) (BS.concat [buffer, bytes])
 
 ----------------------------------------------------------------
 

@@ -21,7 +21,7 @@ type Domain = ByteString
 ----------------------------------------------------------------
 
 -- | Types for resource records.
-data TYPE = A | AAAA | NS | TXT | MX | CNAME | SOA | PTR | SRV | DNAME
+data TYPE = A | AAAA | NS | TXT | MX | CNAME | SOA | PTR | SRV | DNAME | AXFR
           | UNKNOWN Int deriving (Eq, Show, Read)
 
 rrDB :: [(TYPE, Int)]
@@ -36,6 +36,7 @@ rrDB = [
   , (AAAA,  28)
   , (SRV,   33)
   , (DNAME, 39) -- RFC 2672
+  , (AXFR, 252)
   ]
 
 rookup                  :: (Eq b) => b -> [(a,b)] -> Maybe a
@@ -85,6 +86,8 @@ data DNSError =
     --   or a name server may not wish to perform
     --   a particular operation (e.g., zone transfer) for particular data.
   | OperationRefused
+  | ZoneNotFound
+    -- | For AXFR queries. The zone was not found on the server.
   deriving (Eq, Show, Typeable)
 
 instance Exception DNSError
@@ -159,7 +162,17 @@ data QorR = QR_Query | QR_Response deriving (Eq, Show)
 
 data OPCODE = OP_STD | OP_INV | OP_SSR deriving (Eq, Show, Enum)
 
-data RCODE = NoErr | FormatErr | ServFail | NameErr | NotImpl | Refused deriving (Eq, Show, Enum)
+data RCODE = NoErr
+           | FormatErr
+           | ServFail
+           | NameErr
+           | NotImpl
+           | Refused
+           | RCODE6
+           | RCODE7
+           | RCODE8
+           | NoZone
+           deriving (Eq, Show, Enum)
 
 ----------------------------------------------------------------
 

@@ -28,9 +28,11 @@ composeQuery :: Int -> [Question] -> ByteString
 composeQuery idt qs = encode qry
   where
     hdr = header defaultQuery
+    flg = flags hdr
     qry = defaultQuery {
         header = hdr {
            identifier = idt
+         , flags = flg { recDesired = False }
          , qdCount = length qs
          }
       , question = qs
@@ -98,7 +100,7 @@ encodeQuestion :: Question -> SPut
 encodeQuestion Question{..} =
         encodeDomain qname
     +++ putInt16 (typeToInt qtype)
-    +++ put16 1
+    +++ put16 1 -- XXX hardcoded IN(nternet) zone class
 
 encodeRR :: ResourceRecord -> SPut
 encodeRR ResourceRecord{..} =

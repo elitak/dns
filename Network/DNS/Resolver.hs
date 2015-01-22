@@ -18,6 +18,7 @@ module Network.DNS.Resolver (
   , fromDNSFormat
   ) where
 
+import Data.Binary.Put (runPut, putWord16be)
 import Control.Applicative ((<$>), (<*>), pure)
 import Control.Exception (bracket)
 import Data.Char (isSpace)
@@ -28,8 +29,9 @@ import Network.DNS.Decode
 import Network.DNS.Encode
 import Network.DNS.Internal
 import qualified Data.ByteString.Char8 as BS
-import Network.Socket (HostName, Socket, SocketType(Datagram), sClose, socket, connect)
-import Network.Socket (AddrInfoFlag(..), AddrInfo(..), SockAddr(..), PortNumber(..), defaultHints, getAddrInfo)
+import qualified Data.ByteString.Lazy as BL
+import Network.Socket (HostName, Socket, SocketType(Stream), sClose, socket, connect)
+import Network.Socket (AddrInfoFlag(..), AddrInfo(..), SockAddr(..), PortNumber(..), defaultHints, getAddrInfo, Socket(MkSocket), SocketType(..))
 import Prelude hiding (lookup)
 import System.Random (getStdRandom, randomR)
 import System.Timeout (timeout)
@@ -140,10 +142,10 @@ makeResolvSeed conf = ResolvSeed <$> addr
 
 makeAddrInfo :: HostName -> Maybe PortNumber -> IO AddrInfo
 makeAddrInfo addr mport = do
-    proto <- getProtocolNumber "udp"
+    proto <- getProtocolNumber "tcp"
     let hints = defaultHints {
             addrFlags = [AI_ADDRCONFIG, AI_NUMERICHOST, AI_PASSIVE]
-          , addrSocketType = Datagram
+          , addrSocketType = Stream
           , addrProtocol = proto
           }
     a:_ <- getAddrInfo (Just hints) (Just addr) (Just "domain")
@@ -218,6 +220,7 @@ lookupSection section rlv dom typ = do
     dom' = if "." `isSuffixOf` dom then dom else dom ++ "."
     correct r = rrname r == dom' && rrtype r == typ
     -}
+    correct _ | typ == AXFR = True -- XXX allow any type when getting AXFR response
     correct r = rrtype r == typ
     toRDATA = map rdata . filter correct . section
 
@@ -230,6 +233,7 @@ fromDNSFormat ans conv = case errcode ans of
     NameErr   -> Left NameError
     NotImpl   -> Left NotImplemented
     Refused   -> Left OperationRefused
+    NoZone    -> Left ZoneNotFound
   where
     errcode = rcode . flags . header
 
@@ -321,7 +325,7 @@ lookupRawInternal rcv rlv dom typ = do
                   | otherwise = TimeoutExpired
           return $ Left ret
       | otherwise    = do
-          sendAll sock query
+          sendReq sock query
           response <- timeout tm (rcv sock)
           case response of
               Nothing  -> loop query checkSeqno (cnt + 1) False
@@ -338,12 +342,16 @@ lookupRawInternal rcv rlv dom typ = do
     check seqno res = identifier (header res) == seqno
 
 #if mingw32_HOST_OS == 1
-    -- Windows does not support sendAll in Network.ByteString.Lazy.
-    -- This implements sendAll with Haskell Strings.
-    sendAll sock bs = do
-	sent <- send sock (LB.unpack bs)
-	when (sent < fromIntegral (LB.length bs)) $ sendAll sock (LB.drop (fromIntegral sent) bs)
+-- Windows does not support sendAll in Network.ByteString.Lazy.
+-- This implements sendAll with Haskell Strings.
+sendAll sock bs = do
+    sent <- send sock (LB.unpack bs)
+    when (sent < fromIntegral (LB.length bs)) $ sendAll sock (LB.drop (fromIntegral sent) bs)
 #endif
+
+-- This will prefix the message with its length if the socket is using TCP.
+sendReq sock@(MkSocket _ _ Datagram _ _) bs = sendAll sock bs
+sendReq sock@(MkSocket _ _ Stream   _ _) bs = sendAll sock (BL.concat [(runPut $ putWord16be (fromIntegral $ BL.length bs)), bs])
 
 isIllegal :: Domain -> Bool
 isIllegal ""                    = True
